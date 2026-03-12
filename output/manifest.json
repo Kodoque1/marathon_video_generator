@@ -1,0 +1,16 @@
+{
+  "project": "marathon_reboot_homage",
+  "style_mode": "very_close_homage",
+  "stack": [
+    "pycairo",
+    "shapely",
+    "numpy",
+    "matplotlib",
+    "ffmpeg-pipe"
+  ],
+  "soundtrack": "minimal_techno",
+  "video": "marathon_homage.mp4",
+  "audio_tracks": [],
+  "vectors": [],
+  "license_note": "Verify downloaded resource licenses before commercial use."
+}

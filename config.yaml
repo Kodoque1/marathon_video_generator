@@ -1,0 +1,92 @@
+project:
+  name: "marathon_reboot_homage"
+  seed: 42
+  output_dir: "output"
+  assets_dir: "assets"
+  tmp_dir: "tmp"
+
+video:
+  width: 1920
+  height: 1080
+  fps: 30
+  duration_sec: 28
+  scene_count: 4
+  codec: "libx264"
+  pixel_format: "yuv420p"
+
+style:
+  grid:
+    cols: 24
+    rows: 16
+    safe_margin_px: 40
+  negative_space_ratio_min: 0.42
+  alignment: "flush_left"
+  asymmetry_weight: 0.72
+  palette:
+    mode: "obsidian"
+    base: "#0B0C0F"
+    secondary: "#E8E8EA"
+    accent: "#E9FF23"
+  palette_ratio:
+    base: 0.80
+    secondary: 0.15
+    accent: 0.05
+  typography:
+    family_primary: "Inter"
+    family_fallback: "DejaVuSans"
+    hero_tracking: -0.04
+    micro_tracking: 0.20
+    hero_weight: "bold"
+  layout_elements:
+    keylines: true
+    boundary_markers: true
+    hazard_patterns: true
+    data_density_blocks: true
+    vertical_labels: true
+  material_finish:
+    hard_specularity: true
+    subtractive_geometry: true
+
+content:
+  hero_titles:
+    - "MARATHON"
+    - "RUNNER PROTOCOL"
+    - "SYSTEM PURGE"
+    - "VECTOR SIGNAL"
+  micro_labels:
+    - "[STATUS: OK]"
+    - "SYS_AUTH_082"
+    - "RUNNER_V4.1"
+    - "GRID_LOCKED"
+    - "TRJ_8841"
+    - "SAFE_ZONE"
+
+assets:
+  audio:
+    download: true
+    mood: "minimal_techno"
+    source: "pixabay"
+    query: "minimal techno electronic"
+    max_tracks: 3
+  vectors:
+    download: true
+    source: "publicdomainvectors"
+    max_svgs: 5
+  fonts:
+    download_google_fonts: true
+    families:
+      - "Inter"
+
+render:
+  export_name: "marathon_homage.mp4"
+  keep_frames: false
+
+blender:
+  enabled: true
+  # Set to absolute path if `blender` is not on PATH
+  # e.g. "/home/user/blender-4.1/blender"
+  executable: "blender"
+  # How many frames constitute one Blender loop (rendered once, then looped)
+  loop_frames: 90          # 3 seconds at 30 fps
+  # Output name for the hybrid (Blender + HUD) composite
+  hybrid_output: "marathon_hybrid.mp4"

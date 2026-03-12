@@ -1,0 +1,8 @@
+{
+  "project": "marathon_reboot_homage",
+  "pipeline": "blender_3d + pycairo_hud + ffmpeg_composite",
+  "blender": "/snap/bin/blender",
+  "video": "marathon_hybrid.mp4",
+  "loop_frames": 90,
+  "total_frames": 72
+}
