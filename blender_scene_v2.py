@@ -77,6 +77,70 @@ ACCENT_RED  = FG
 ACCENT_MAG  = FG
 ACCENT_LIM  = FG
 
+
+def validate_palette_consistency():
+    """
+    Validate the black + acid-lime palette using Cassowary constraints.
+
+    This keeps the design system deterministic for the Blender-only pipeline:
+      * every accent alias must resolve to the same FG colour
+      * background must remain darker than foreground
+      * alpha channels stay fully opaque
+    """
+    solver = kiwi.Solver()
+
+    # Variable groups: background + canonical foreground + alias accents.
+    var_specs = {
+        "base": BASE,
+        "fg": FG,
+        "secondary": SECONDARY,
+        "accent_yel": ACCENT_YEL,
+        "accent_cya": ACCENT_CYA,
+        "accent_org": ACCENT_ORG,
+        "accent_red": ACCENT_RED,
+        "accent_mag": ACCENT_MAG,
+        "accent_lim": ACCENT_LIM,
+    }
+    channels = ("r", "g", "b", "a")
+    vars_by_name = {
+        name: {ch: kiwi.Variable(f"{name}_{ch}") for ch in channels}
+        for name in var_specs
+    }
+
+    # Lock all solver variables to the constants defined in this module.
+    for name, rgba in var_specs.items():
+        for idx, ch in enumerate(channels):
+            solver.addConstraint(vars_by_name[name][ch] == rgba[idx])
+
+    # Every accent is exactly the same as canonical FG.
+    for alias in ("secondary", "accent_yel", "accent_cya", "accent_org",
+                  "accent_red", "accent_mag", "accent_lim"):
+        for ch in channels:
+            solver.addConstraint(vars_by_name[alias][ch] == vars_by_name["fg"][ch])
+
+    # Background must stay darker than foreground, channel-wise.
+    solver.addConstraint(vars_by_name["base"]["r"] <= vars_by_name["fg"]["r"])
+    solver.addConstraint(vars_by_name["base"]["g"] <= vars_by_name["fg"]["g"])
+    solver.addConstraint(vars_by_name["base"]["b"] <= vars_by_name["fg"]["b"])
+
+    # Opaque palette (alpha = 1).
+    solver.addConstraint(vars_by_name["base"]["a"] == 1.0)
+    solver.addConstraint(vars_by_name["fg"]["a"] == 1.0)
+
+    solver.updateVariables()
+
+
+def ensure_design_consistency(screen_w, screen_h):
+    """Run solver checks for both palette and canonical live-text layout."""
+    validate_palette_consistency()
+    target_rect = {
+        "x": screen_w / 2.0,
+        "y": screen_h / 2.0,
+        "w": 200,
+        "h": 200,
+    }
+    _ = calculate_ui_layout(target_rect, screen_w, screen_h)
+
 # ── Font ───────────────────────────────────────────────────────────────
 FONT_PATH = "/usr/share/fonts/opentype/b612/B612Mono-Bold.otf"
 _font_cache = {}   # path → bpy.types.VectorFont
@@ -1612,13 +1676,13 @@ def main():
     print("[v2] Building telemetry text …")
     _, live_objs = create_telemetry_text(n)
 
-    # Compute a reasonable target_rect in screen pixels (centered on screen).
-    # Uses a default target size so layout places boxes around center target.
+    # Canonical consistency checks (palette + layout) via Cassowary solver.
     screen_w = args.width
     screen_h = args.height
-    tgt_w_px = 200
-    tgt_h_px = 200
-    target_rect = {'x': screen_w / 2.0, 'y': screen_h / 2.0, 'w': tgt_w_px, 'h': tgt_h_px}
+    ensure_design_consistency(screen_w, screen_h)
+
+    # Compute a reasonable target_rect in screen pixels (centered on screen).
+    target_rect = {"x": screen_w / 2.0, "y": screen_h / 2.0, "w": 200, "h": 200}
 
     try:
         ui_coords = calculate_ui_layout(target_rect, screen_w, screen_h)
