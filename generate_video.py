@@ -303,10 +303,26 @@ def bake_hud_panel(pw: int, ph: int,
     buf.seek(0)
 
     actual_w, actual_h = (int(round(v)) for v in (fig.get_size_inches() * dpi))
-    raw  = np.frombuffer(buf.read(), dtype=np.uint8).reshape(actual_h, actual_w, 4)
+    buf_bytes = buf.read()
+    expected = actual_h * actual_w * 4
+    print(f"[DEBUG] bake_hud_panel: actual_w={actual_w}, actual_h={actual_h}, buffer_len={len(buf_bytes)}, expected={expected}")
+    # Fix buffer length mismatch: pad or crop as needed
+    if len(buf_bytes) < expected:
+        print(f"[FIX] Padding buffer from {len(buf_bytes)} to {expected}")
+        buf_bytes += b'\x00' * (expected - len(buf_bytes))
+    elif len(buf_bytes) > expected:
+        print(f"[FIX] Cropping buffer from {len(buf_bytes)} to {expected}")
+        buf_bytes = buf_bytes[:expected]
+    try:
+        raw = np.frombuffer(buf_bytes, dtype=np.uint8).reshape(actual_h, actual_w, 4)
+    except ValueError as e:
+        print(f"[ERROR] bake_hud_panel reshape failed: {e}")
+        print(f"[DEBUG] buffer_len={len(buf_bytes)}, actual_h={actual_h}, actual_w={actual_w}, expected={expected}")
+        raise
     rgb  = raw[:, :, :3]
 
     if rgb.shape[:2] != (ph, pw):
+        print(f"[DEBUG] Resizing rgb from {rgb.shape[:2]} to {(ph, pw)}")
         rgb = np.array(Image.fromarray(rgb).resize((pw, ph), Image.LANCZOS))
 
     return rgb
