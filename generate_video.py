@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cairo
+import kiwisolver as kiwi
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -28,6 +29,7 @@ import requests
 import yaml
 from PIL import Image
 from shapely.geometry import Polygon
+from z3 import If, Optimize, Real, sat
 
 # ─────────────────────────────────────────────
 # Config helpers
@@ -83,6 +85,105 @@ def readable_on(bg8: Tuple[int, int, int],
     """Return the candidate with highest WCAG contrast ratio against bg, as 0-1 floats."""
     best = max(candidates, key=lambda c: _contrast(bg8, c))
     return tuple(x / 255.0 for x in best)
+
+
+def solve_palette_ratios(style: Dict) -> Dict[str, float]:
+    """
+    Use Z3 to stabilize palette ratios so they always form a coherent scheme
+    (sum to 1.0, avoid accent overpowering, remain close to configured intent).
+    """
+    ratio_cfg = style.get("palette_ratio", {})
+    desired_base = float(ratio_cfg.get("base", 0.80))
+    desired_secondary = float(ratio_cfg.get("secondary", 0.15))
+    desired_accent = float(ratio_cfg.get("accent", 0.05))
+
+    base = Real("base_ratio")
+    secondary = Real("secondary_ratio")
+    accent = Real("accent_ratio")
+
+    o = Optimize()
+    o.add(base >= 0.65, base <= 0.90)
+    o.add(secondary >= 0.08, secondary <= 0.28)
+    o.add(accent >= 0.02, accent <= 0.12)
+    o.add(base + secondary + accent == 1.0)
+    o.add(base >= secondary)
+    o.add(secondary >= accent)
+
+    # L1 distance to requested profile (linearized with If/absolute value)
+    o.minimize(If(base - desired_base >= 0, base - desired_base, desired_base - base))
+    o.minimize(If(secondary - desired_secondary >= 0,
+                  secondary - desired_secondary,
+                  desired_secondary - secondary))
+    o.minimize(If(accent - desired_accent >= 0,
+                  accent - desired_accent,
+                  desired_accent - accent))
+
+    if o.check() != sat:
+        return {
+            "base": desired_base,
+            "secondary": desired_secondary,
+            "accent": desired_accent,
+        }
+
+    m = o.model()
+    return {
+        "base": float(m[base].as_decimal(10).replace("?", "")),
+        "secondary": float(m[secondary].as_decimal(10).replace("?", "")),
+        "accent": float(m[accent].as_decimal(10).replace("?", "")),
+    }
+
+
+def solve_layout_rects(gm: Dict, width: int, height: int, focus_left: bool) -> Dict[str, Tuple[float, float, float, float]]:
+    """Use Kassowary constraints to enforce consistent panel placements."""
+    margin = float(gm["margin"])
+    cell_w = float(gm["cell_w"])
+    cell_h = float(gm["cell_h"])
+
+    s = kiwi.Solver()
+    hx0 = kiwi.Variable("hx0")
+    hy0 = kiwi.Variable("hy0")
+    hx1 = kiwi.Variable("hx1")
+    hy1 = kiwi.Variable("hy1")
+    px0 = kiwi.Variable("px0")
+    py0 = kiwi.Variable("py0")
+    px1 = kiwi.Variable("px1")
+    py1 = kiwi.Variable("py1")
+
+    # Hard constraints: safe zones and minimum dimensions
+    for c in [
+        hx0 >= margin, hy0 >= margin, hx1 <= width - margin, hy1 <= height - margin,
+        px0 >= margin, py0 >= margin, px1 <= width - margin, py1 <= height - margin,
+        hx1 - hx0 >= 10 * cell_w, hy1 - hy0 >= 8 * cell_h,
+        px1 - px0 >= 5 * cell_w, py1 - py0 >= 5 * cell_h,
+    ]:
+        s.addConstraint(c)
+
+    # Preferred anchors (weak) to keep recognizable design while allowing adaptation.
+    hero_c0 = 1 if focus_left else 12
+    hero_c1 = 13 if focus_left else 23
+    panel_c0, panel_r0, panel_c1, panel_r1 = ((17, 2, 23, 8) if focus_left else (1, 7, 6, 13))
+
+    s.addConstraint((hx0 == margin + hero_c0 * cell_w) | kiwi.strength.weak)
+    s.addConstraint((hx1 == margin + hero_c1 * cell_w) | kiwi.strength.weak)
+    s.addConstraint((hy0 == margin + 2 * cell_h) | kiwi.strength.weak)
+    s.addConstraint((hy1 == margin + 12 * cell_h) | kiwi.strength.weak)
+
+    s.addConstraint((px0 == margin + panel_c0 * cell_w) | kiwi.strength.weak)
+    s.addConstraint((px1 == margin + panel_c1 * cell_w) | kiwi.strength.weak)
+    s.addConstraint((py0 == margin + panel_r0 * cell_h) | kiwi.strength.weak)
+    s.addConstraint((py1 == margin + panel_r1 * cell_h) | kiwi.strength.weak)
+
+    # Keep visual separation between focal panel and opposite info panel.
+    if focus_left:
+        s.addConstraint((px0 >= hx1 + 2 * cell_w) | kiwi.strength.medium)
+    else:
+        s.addConstraint((hx0 >= px1 + 2 * cell_w) | kiwi.strength.medium)
+
+    s.updateVariables()
+    return {
+        "hero_rect": (hx0.value(), hy0.value(), hx1.value(), hy1.value()),
+        "data_rect": (px0.value(), py0.value(), px1.value(), py1.value()),
+    }
 
 # ─────────────────────────────────────────────
 # Shapely → Cairo path
@@ -499,6 +600,7 @@ def render_frame(
 ) -> np.ndarray:
     style   = config["style"]
     content = config["content"]
+    ratios = solve_palette_ratios(style)
 
     if hud_layer:
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
@@ -517,7 +619,7 @@ def render_frame(
         ctx.paint()
 
     # ── Faint structural grid ─────────────────────────────
-    ctx.set_source_rgba(secondary01[0], secondary01[1], secondary01[2], 0.05)
+    ctx.set_source_rgba(secondary01[0], secondary01[1], secondary01[2], 0.03 + 0.08 * ratios["secondary"])
     ctx.set_line_width(0.5)
     for c in range(1, int(style["grid"]["cols"])):
         x, _ = cell_xy(c, 0, gm)
@@ -529,7 +631,7 @@ def render_frame(
 
     # Safe-zone border
     m = gm["margin"]
-    ctx.set_source_rgba(secondary01[0], secondary01[1], secondary01[2], 0.10)
+    ctx.set_source_rgba(secondary01[0], secondary01[1], secondary01[2], 0.06 + 0.12 * ratios["secondary"])
     ctx.set_line_width(0.5)
     ctx.rectangle(m, m, width - 2*m, height - 2*m)
     ctx.stroke()
@@ -538,13 +640,14 @@ def render_frame(
     focus_left = scene % 2 == 0
     c0 = 1 if focus_left else 12
     c1 = 13 if focus_left else 23
-    hero_rect = cell_rect(c0, 2, c1, 12, gm)
+    layout_rects = solve_layout_rects(gm, width, height, focus_left)
+    hero_rect = layout_rects["hero_rect"]
     hx0, hy0, hx1, hy1 = hero_rect
 
     draw_subtractive_panel(ctx, hero_rect, secondary01, base01)
 
     # Inner cut-out accent tint
-    ctx.set_source_rgba(accent01[0], accent01[1], accent01[2], 0.04)
+    ctx.set_source_rgba(accent01[0], accent01[1], accent01[2], 0.02 + 0.20 * ratios["accent"])
     ctx.rectangle(hx0 + 32, hy0 + 32, (hx1 - 80) - (hx0 + 32), (hy1 - 44) - (hy0 + 32))
     ctx.fill()
 
@@ -572,8 +675,7 @@ def render_frame(
     # ── Pre-baked HUD data panel (opposite side) ──────────
     panel = hud_panels.get(scene)
     if panel is not None:
-        dr = (cell_rect(17, 2, 23, 8, gm) if focus_left
-              else cell_rect(1, 7, 6, 13, gm))
+        dr = solve_layout_rects(gm, width, height, focus_left)["data_rect"]
         composite_numpy_panel(ctx, dr[0], dr[1], panel)
         serial = f"SYS_{(scene*3571+1009)%9000+1000}_{(scene*127)%90+10}"
         ctx.set_font_face(cairo.ToyFontFace("monospace"))
@@ -600,7 +702,7 @@ def render_frame(
 
     # ── Animated accent pulse square (5% role) ────────────
     pulse = 0.5 + 0.5 * math.sin(2 * math.pi * (global_t * 2.4 + scene * 0.18))
-    ctx.set_source_rgba(*accent01, 0.12 + pulse * 0.38)
+    ctx.set_source_rgba(*accent01, (0.08 + 0.30 * ratios["accent"]) + pulse * (0.20 + 0.20 * ratios["accent"]))
     ctx.rectangle(hx0 - 7, hy0 - 7, 30, 30)
     ctx.fill()
 
@@ -754,12 +856,15 @@ def generate_hud_layer(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     style       = config["style"]
+    solved_ratios = solve_palette_ratios(style)
     base01      = hex_to_rgb01(style["palette"]["base"])
     secondary01 = hex_to_rgb01(style["palette"]["secondary"])
     accent01    = hex_to_rgb01(style["palette"]["accent"])
     base8       = hex_to_rgb8(style["palette"]["base"])
     secondary8  = hex_to_rgb8(style["palette"]["secondary"])
     accent8     = hex_to_rgb8(style["palette"]["accent"])
+
+    print(f"  Palette ratios (Z3): base={solved_ratios['base']:.3f} sec={solved_ratios['secondary']:.3f} acc={solved_ratios['accent']:.3f}")
 
     gm = grid_metrics(width, height,
                       int(style["grid"]["cols"]),
@@ -770,8 +875,7 @@ def generate_hud_layer(
     hud_panels: Dict[int, np.ndarray] = {}
     for s in range(scene_count):
         focus_left = s % 2 == 0
-        dr = (cell_rect(17, 2, 23, 8, gm) if focus_left
-              else cell_rect(1, 7, 6, 13, gm))
+        dr = solve_layout_rects(gm, width, height, focus_left)["data_rect"]
         pw, ph = max(4, int(dr[2]-dr[0])), max(4, int(dr[3]-dr[1]))
         hud_panels[s] = bake_hud_panel(pw, ph, base01, secondary01, s)
 
@@ -821,12 +925,15 @@ def generate(config: Dict, root: Path,
     output_path  = output_dir / config["render"]["export_name"]
 
     style       = config["style"]
+    solved_ratios = solve_palette_ratios(style)
     base01      = hex_to_rgb01(style["palette"]["base"])
     secondary01 = hex_to_rgb01(style["palette"]["secondary"])
     accent01    = hex_to_rgb01(style["palette"]["accent"])
     base8       = hex_to_rgb8(style["palette"]["base"])
     secondary8  = hex_to_rgb8(style["palette"]["secondary"])
     accent8     = hex_to_rgb8(style["palette"]["accent"])
+
+    print(f"  Palette ratios (Z3): base={solved_ratios['base']:.3f} sec={solved_ratios['secondary']:.3f} acc={solved_ratios['accent']:.3f}")
 
     gm = grid_metrics(width, height,
                       int(style["grid"]["cols"]),
@@ -838,8 +945,7 @@ def generate(config: Dict, root: Path,
     hud_panels: Dict[int, np.ndarray] = {}
     for s in range(scene_count):
         focus_left = s % 2 == 0
-        dr = (cell_rect(17, 2, 23, 8, gm) if focus_left
-              else cell_rect(1, 7, 6, 13, gm))
+        dr = solve_layout_rects(gm, width, height, focus_left)["data_rect"]
         pw, ph = max(4, int(dr[2]-dr[0])), max(4, int(dr[3]-dr[1]))
         hud_panels[s] = bake_hud_panel(pw, ph, base01, secondary01, s)
 
